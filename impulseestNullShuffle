@@ -1,0 +1,96 @@
+function [cxy f y t] = ImpulseestNullShuffle(file,noiseSp,plotFlag,shuffleFlag)
+if nargin < 4
+    shuffleFlag=false
+end
+%% Load file and rearrange data so it is iddata ready
+load(file)
+dx_m = [];
+stimSp = [];
+counter = 1;
+
+
+%just using the first 2 seconds of the trial
+for k=1:length(eyeData.dxCleaned);
+    eyeData.dxCleaned{1,k}(2201:end)=[];
+    stim.spSum2(k,:)=stim.spSum(k,1:240);
+end
+
+if shuffleFlag==true;
+    indOriginal = stim.noiseInd; % no shuffling
+    for b = 1:3 % do 3 shuffles. In practice, we might want to do 100 
+        indNew = zeros(size(indOriginal)); % initialise vector of new indices
+        nTrial = length(indOriginal);
+        indUni = unique(stim.noiseInd); % list unique values
+        for a = 1:nTrial % loop through each trial
+            indDiff = setdiff(indUni, indOriginal(a)); % return the list of values that excludes the current index
+            indNew(a) = randsample(indDiff, 1); % randomly choose a single value
+        end
+        allDat{b} = [indOriginal indNew]; % save original and shuffled indices, so we can compare them
+    end
+    stim.noiseInd2=allDat{1,2}(:,2)
+    allDat{1}(1:10,:) % spit out the values for comparison
+end
+
+
+for nExp = unique(stim.nExperiment(stim.noiseSp == noiseSp))' % Experiments with specified noiseSp
+    thisExpDx = eyeData.dxCleaned(stim.nExperiment==nExp);
+    thisExpStim = stim.spSum2(stim.nExperiment==nExp,:);
+    thisExpNoiseIdx = stim.noiseInd(stim.nExperiment==nExp);
+    if shuffleFlag==true;
+        thisExpNoiseIdx2 = stim.noiseInd2(stim.nExperiment==nExp);
+    end
+    
+    for nNoise = 1:length(unique(thisExpNoiseIdx))
+        
+        thisNoiseDx = cell2mat(thisExpDx(thisExpNoiseIdx == nNoise));
+        dx_m{counter} = nanmean(resample(thisNoiseDx(201:end,:),120,1000,1),2);
+        % Omit buffer, resample to 120 Hz, and average across trials per
+        % noise instance
+        if shuffleFlag==false;
+            stimSp{counter} = mean(thisExpStim(thisExpNoiseIdx == nNoise,:),1)';
+            counter = counter+1;
+        elseif shuffleFlag==true;
+            stimSp{counter} = mean(thisExpStim(thisExpNoiseIdx2 == nNoise,:),1)';
+            counter = counter+1;
+        end
+    end
+end
+
+%% Estimate impulse response
+
+cxy = [];
+
+for expTest = 1:length(dx_m)
+    % Specify training set for this loop
+    expTrain = 1:length(dx_m);
+    expTrain(expTrain==expTest) = [];
+    
+    % Estimate impulse response based on training data
+    trainData = iddata(dx_m(expTrain),stimSp(expTrain), 1/120,'outputname','Eye Speed','inputname','Stim Speed');
+    sys = impulseest(detrend(trainData),30,6);
+    [y(expTest,:),t]=impulse(sys);
+    
+    % Use estimated impulse response to predict testing data
+    testData = iddata(dx_m(expTest),stimSp(expTest), 1/120,'outputname','Eye Speed','inputname','Stim Speed');
+    compOpt = compareOptions('InitialCondition','z');
+    predictTest = compare(detrend(testData),sys,compOpt); % Validate using test trial
+    [cxy(:,expTest) f(:,expTest)]  = mscohere(testData.OutputData,predictTest.OutputData,[],[],[],120); % quantify correlation
+    
+    
+    % Plotting and Visualisation of Responses
+        close all
+        fig = figure;
+        set(fig, 'WindowState','maximize');
+        subplot(3,1,1);
+        h = impulseplot(sys,1);
+        showConfidence(h);
+        subplot(3,1,2);
+        compare(detrend(testData),sys,compOpt);
+        title(['Validation Trial ' num2str(expTest)])
+        subplot(3,1,3);
+        plot(f,cxy(:,expTest))
+        pause(1)
+        
+    end
+
+end
